@@ -5,11 +5,80 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap, QIcon, QFont
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                                QHBoxLayout, QLabel, QLineEdit, QPushButton, 
-                               QComboBox, QScrollArea, QMessageBox, QStackedWidget)
+                               QComboBox, QScrollArea, QMessageBox, QStackedWidget,
+                               QDialog, QInputDialog)
 from database import Database
 from discount import calculate_price_sad_ogorod 
 
-def create_card(product):
+class ProductCard(QDialog):
+    def __init__(self, product, main_window):
+        super().__init__()
+        self.product = product
+        self.main_window = main_window
+        self.setWindowTitle("Карточка товара")
+        self.resize(400, 550)
+        self.setup_ui()
+
+    def setup_ui(self):
+        self.setStyleSheet("QDialog { background-color: #FFFFFF; }")
+        
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(20, 20, 20, 20)
+        
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignCenter)
+        pixmap = QPixmap(os.path.join("images", self.product[3])) if self.product[3] else QPixmap()
+        if pixmap.isNull():
+            self.image_label.setText("Фото отсутствует")
+            self.image_label.setStyleSheet("border: 1px solid #ccc; padding: 40px; color: #888888; font-size: 14px;")
+        else:
+            self.image_label.setPixmap(pixmap.scaled(200, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        
+        self.name_label = QLabel(f"{self.product[1]}")
+        self.name_label.setAlignment(Qt.AlignCenter)
+        self.name_label.setWordWrap(True)
+        self.name_label.setStyleSheet("font-size: 22px; font-weight: bold; color: #2c3e50;")
+        
+        desc_label = QLabel(f"Производитель: {self.product[4]}\nКатегория: {self.product[6]}")
+        desc_label.setAlignment(Qt.AlignCenter)
+        desc_label.setStyleSheet("color: #555555; font-size: 14px;")
+
+        self.variant_combo = QComboBox()
+        self.variant_combo.setStyleSheet("padding: 5px; font-size: 14px; border: 1px solid #ccc; color: #000000; background-color: #FFFFFF;")
+        if "Лопатка" in self.product[1]:
+            self.variant_combo.addItems(["Длина 25 см", "Длина 30 см", "Длина 35 см"])
+        elif "Лейка" in self.product[1]:
+            self.variant_combo.addItems(["Объём 3 л", "Объём 5 л", "Объём 8 л"])
+        elif "Горшок" in self.product[1]:
+            self.variant_combo.addItems(["Диаметр 12 см", "Диаметр 16 см", "Диаметр 20 см"])
+        elif "Укрывной" in self.product[1]:
+            self.variant_combo.addItems(["Плотность 17 г/м²", "Плотность 30 г/м²", "Плотность 60 г/м²"])
+        else:
+            self.variant_combo.addItem("Стандарт")
+
+        lbl_variant = QLabel("Выберите вариант:")
+        lbl_variant.setStyleSheet("font-weight: bold; color: #000000; font-size: 14px;")
+
+        btn_add = QPushButton("Добавить в корзину")
+        btn_add.setStyleSheet("background-color: #70B2AF; color: white; padding: 10px; border-radius: 5px; font-weight: bold; font-size: 14px; border: none;")
+        btn_add.clicked.connect(self.add_to_cart_click)
+
+        layout.addWidget(self.image_label)
+        layout.addWidget(self.name_label)
+        layout.addWidget(desc_label)
+        layout.addStretch()
+        layout.addWidget(lbl_variant)
+        layout.addWidget(self.variant_combo)
+        layout.addWidget(btn_add)
+
+    def add_to_cart_click(self):
+        qty, ok = QInputDialog.getInt(self, "Количество", "Сколько штук добавить?", 1, 1, 100)
+        if ok:
+            self.main_window.add_to_cart(self.product[0], float(self.product[2]), qty)
+            self.accept()
+
+def create_card(product, main_window):
     card = QWidget()
     card.setObjectName("productCard")
 
@@ -27,6 +96,8 @@ def create_card(product):
         bg_color, border_color = "#FFFFFF", "#000000"
 
     card.setStyleSheet(f"#productCard {{ border: 1px solid {border_color}; border-radius: 4px; background-color: {bg_color}; }} #productCard QLabel {{ background-color: transparent; font-family: Calibri; }}")
+
+    card.mousePressEvent = lambda event: ProductCard(product, main_window).exec()
 
     main_layout = QHBoxLayout(card)
     main_layout.setContentsMargins(10, 10, 10, 10)
@@ -90,12 +161,10 @@ def create_card(product):
     new_price_label = QLabel(f"<b>{final_price:.2f} ₽</b>")
     new_price_label.setAlignment(Qt.AlignRight)
     new_price_label.setStyleSheet("color: black; font-weight: bold; font-size: 16px; border: none; font-family: Calibri;")
-
     price_layout.addWidget(new_price_label)
-    main_layout.addLayout(price_layout)
-    
-    return card
 
+    main_layout.addLayout(price_layout)
+    return card
 
 class MainWindow(QMainWindow):
     def __init__(self, role_id=None, full_name=None, db=None):
@@ -103,6 +172,7 @@ class MainWindow(QMainWindow):
         self.role_id = role_id
         self.full_name = full_name
         self.db = db if db is not None else Database()
+        self.cart = []
 
         self.setWindowTitle("Сад и огород — Каталог")
         self.resize(900, 700)
@@ -149,6 +219,14 @@ class MainWindow(QMainWindow):
 
         self.logout_button = QPushButton("Выход")
         self.logout_button.clicked.connect(self.logout)
+        self.logout_button.setFixedSize(80, 30)
+        self.logout_button.setStyleSheet("""
+            QPushButton {
+                background-color: #70B2AF; color: white; border: none; 
+                border-radius: 4px; font-size: 13px; padding: 0px; margin: 0px;
+            }
+            QPushButton:hover { background-color: #5a9a97; }
+        """)
         header_layout.addWidget(self.logout_button)
         main_layout.addWidget(header_widget)
 
@@ -178,9 +256,21 @@ class MainWindow(QMainWindow):
         self.filter_combo = QComboBox()
         self.filter_combo.addItem("Все категории")
         categories = self.db.get_categories()
-        for cat in categories: self.filter_combo.addItem(cat)
+        for cat in categories:
+            self.filter_combo.addItem(cat)
         self.filter_combo.currentIndexChanged.connect(self.load_products)
         controls_layout.addWidget(self.filter_combo, 1)
+
+        self.sort_combo = QComboBox()
+        self.sort_combo.addItems([
+            "Без сортировки",
+            "Цена: по возрастанию",
+            "Цена: по убыванию",
+            "Количество: по возрастанию",
+            "Количество: по убыванию",
+        ])
+        self.sort_combo.currentIndexChanged.connect(self.load_products)
+        controls_layout.addWidget(self.sort_combo, 1)
 
         catalog_layout.addLayout(controls_layout)
 
@@ -189,7 +279,7 @@ class MainWindow(QMainWindow):
         self.admin_button = QPushButton("Админ-панель")
         
         self.order_button.clicked.connect(self.confirm_order)
-        self.manager_button.clicked.connect(lambda: self.switch_page(2))
+        self.manager_button.clicked.connect(self.open_orders_page)
         
         self.test_delete_btn = QPushButton("Удалить заказ (тест)")
         self.test_delete_btn.clicked.connect(lambda: self.delete_order(1))
@@ -208,47 +298,64 @@ class MainWindow(QMainWindow):
         self.scroll.setWidget(self.container)
         catalog_layout.addWidget(self.scroll)
 
-        self.page_product = QWidget()
-        product_layout = QVBoxLayout(self.page_product)
-        product_layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
-        
-        form_title = QLabel("Добавление нового товара")
-        form_title.setStyleSheet("font-size: 20px; font-weight: bold; margin-bottom: 20px;")
-        product_layout.addWidget(form_title)
-
-        self.name_input = QLineEdit()
-        self.name_input.setPlaceholderText("Введите наименование товара")
-        product_layout.addWidget(self.name_input)
-
-        self.price_input = QLineEdit()
-        self.price_input.setPlaceholderText("Введите цену (например, 1500)")
-        product_layout.addWidget(self.price_input)
-
-        self.quantity_input = QLineEdit()
-        self.quantity_input.setPlaceholderText("Введите количество (например, 10)")
-        product_layout.addWidget(self.quantity_input)
-
-        self.date_input = QLineEdit()
-        self.date_input.setPlaceholderText("Дата заказа (ДД.ММ.ГГГГ)")
-        product_layout.addWidget(self.date_input)
-
-        self.save_product_btn = QPushButton("Сохранить товар")
-        self.save_product_btn.clicked.connect(self.add_product)
-        product_layout.addWidget(self.save_product_btn)
-        
-        product_layout.addStretch()
-
         self.page_orders = QWidget()
         orders_layout = QVBoxLayout(self.page_orders)
-        orders_layout.addWidget(QLabel("Здесь будет список заказов", alignment=Qt.AlignCenter))
+        
+        self.orders_scroll = QScrollArea()
+        self.orders_scroll.setWidgetResizable(True)
+        self.orders_scroll.setStyleSheet("border: none; background-color: #FFFFFF")
+        self.orders_container = QWidget()
+        self.orders_list_layout = QVBoxLayout(self.orders_container)
+        self.orders_list_layout.setAlignment(Qt.AlignTop)
+        self.orders_scroll.setWidget(self.orders_container)
+        
+        orders_layout.addWidget(self.orders_scroll)
 
         self.stacked_widget.addWidget(self.page_catalog)
-        self.stacked_widget.addWidget(self.page_product)
         self.stacked_widget.addWidget(self.page_orders)
         
         main_layout.addWidget(self.stacked_widget)
         central.setLayout(main_layout)
         self.setCentralWidget(central)
+
+    def open_orders_page(self):
+        self.switch_page(1)
+        self.load_orders()
+
+    def load_orders(self):
+        for i in reversed(range(self.orders_list_layout.count())):
+            widget = self.orders_list_layout.itemAt(i).widget()
+            if widget:
+                widget.setParent(None)
+
+        orders = self.db.get_all_orders()
+        if not orders:
+            lbl = QLabel("Заказов пока нет.")
+            lbl.setStyleSheet("font-size: 18px; color: #555555; font-weight: bold;")
+            self.orders_list_layout.addWidget(lbl)
+            return
+
+        for order in orders:
+            order_id = order[0]
+            fio = order[1].strip() if order[1] else "Неизвестный пользователь"
+            items_count = order[2]
+            total_sum = order[3] if order[3] else 0
+
+            card = QWidget()
+            card.setStyleSheet("border: 1px solid #000000; border-radius: 4px; background-color: #F4F9F9; margin-bottom: 5px;")
+            layout = QHBoxLayout(card)
+            
+            lbl_info = QLabel(f"<b>Заказ №{order_id}</b> | {fio}")
+            lbl_info.setStyleSheet("font-size: 14px; color: black; border: none;")
+            
+            lbl_details = QLabel(f"Позиций: {items_count} | Сумма: {total_sum:.2f} ₽")
+            lbl_details.setStyleSheet("font-size: 14px; color: black; border: none; font-weight: bold;")
+            
+            layout.addWidget(lbl_info)
+            layout.addStretch()
+            layout.addWidget(lbl_details)
+            
+            self.orders_list_layout.addWidget(card)
 
     def switch_page(self, index):
         self.stacked_widget.setCurrentIndex(index)
@@ -260,27 +367,35 @@ class MainWindow(QMainWindow):
             self.switch_page(current_index - 1)
 
     def update_title_and_back_button(self, index):
-        titles = ["Сад и огород — Каталог", "Сад и огород — Карточка товара", "Сад и огород — Заказы"]
+        titles = ["Сад и огород — Каталог", "Сад и огород — Заказы"]
         if 0 <= index < len(titles):
             self.title_label.setText(titles[index])
             self.setWindowTitle(titles[index])
-        if index == 0: self.back_button.hide()
-        else: self.back_button.show()
+        if index == 0:
+            self.back_button.hide()
+        else:
+            self.back_button.show()
 
     def load_products(self):
         for i in reversed(range(self.list_layout.count())):
             widget = self.list_layout.itemAt(i).widget()
-            if widget: widget.setParent(None)
+            if widget:
+                widget.setParent(None)
 
         search = self.search_input.text()
         category = self.filter_combo.currentText()
+        sort = self.sort_combo.currentText()
 
-        self.products = self.db.get_products(search, category, "")
+        self.products = self.db.get_products(search, category, sort)
+        
         if not self.products:
-            self.list_layout.addWidget(QLabel("Товары не найдены."))
+            not_found_label = QLabel("Товары не найдены.")
+            not_found_label.setStyleSheet("font-size: 18px; color: #555555; font-weight: bold; margin-top: 20px;")
+            not_found_label.setAlignment(Qt.AlignCenter)
+            self.list_layout.addWidget(not_found_label)
         else:
             for product in self.products:
-                self.list_layout.addWidget(create_card(product))
+                self.list_layout.addWidget(create_card(product, self))
 
     def setup_role_interface(self):
         self.order_button.hide()
@@ -297,6 +412,25 @@ class MainWindow(QMainWindow):
         elif self.role_id == 3:
             self.order_button.show()
 
+    def add_to_cart(self, product_id, price, qty=1):
+        self.cart.append({'product_id': product_id, 'quantity': qty, 'price': price})
+        QMessageBox.information(self, "Корзина", f"Товар добавлен в корзину ({qty} шт.)!")
+
+    def confirm_order(self):
+        if not self.cart:
+            QMessageBox.warning(self, "Внимание", "Ваша корзина пуста!")
+            return
+
+        test_user_id = 3
+        success = self.db.create_order(test_user_id, self.cart)
+        
+        if success:
+            QMessageBox.information(self, "Успех", f"Заказ на {len(self.cart)} позиций успешно оформлен!")
+            self.cart.clear() 
+            self.load_products() 
+        else:
+            QMessageBox.critical(self, "Ошибка", "Не удалось сохранить заказ в базу данных.")
+
     def delete_order(self, order_id):
         reply = QMessageBox.warning(
             self, "Предупреждение", "Вы уверены, что хотите удалить заказ?",
@@ -304,62 +438,6 @@ class MainWindow(QMainWindow):
         )
         if reply == QMessageBox.Yes:
             pass
-
-    def confirm_order(self):
-        QMessageBox.information(self, "Информация", "Заказ успешно оформлен!")
-
-    def add_to_cart(self):
-        qty_text = self.quantity_input.text().strip()
-        if not qty_text:
-            QMessageBox.critical(self, "Ошибка", "Введите количество")
-            return
-            
-        if not qty_text.isdigit():
-            QMessageBox.critical(self, "Ошибка", "Введите число")
-            return
-            
-        quantity = int(qty_text)
-        if quantity <= 0:
-            QMessageBox.critical(self, "Ошибка", "Количество должно быть положительным")
-            return
-
-    def add_product(self):
-        price_text = self.price_input.text().strip()
-        if not price_text:
-            QMessageBox.critical(self, "Ошибка", "Введите цену")
-            return
-            
-        try:
-            price = float(price_text)
-        except ValueError:
-            QMessageBox.critical(self, "Ошибка", "Введите число")
-            return
-            
-        if price <= 0:
-            QMessageBox.critical(self, "Ошибка", "Цена должна быть положительной")
-            return
-
-        name = self.name_input.text().strip()
-        if not name:
-            QMessageBox.critical(self, "Ошибка", "Введите наименование")
-            return
-            
-        date_str = self.date_input.text().strip()
-        if not date_str:
-            QMessageBox.critical(self, "Ошибка", "Введите дату")
-            return
-            
-        try:
-            date = datetime.strptime(date_str, "%d.%m.%Y")
-        except ValueError:
-            QMessageBox.critical(self, "Ошибка", "Введите дату в формате ДД.ММ.ГГГГ")
-            return
-
-        QMessageBox.information(self, "Успех", "Товар успешно добавлен!")
-        self.name_input.clear()
-        self.price_input.clear()
-        self.quantity_input.clear()
-        self.date_input.clear()
 
     def logout(self):
         reply = QMessageBox.question(self, "Выход", "Вы уверены, что хотите выйти?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
