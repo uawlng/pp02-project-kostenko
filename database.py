@@ -86,29 +86,50 @@ class Database:
         finally:
             self.release_connection(conn)
 
-    def create_order(self, user_id, items):
+    def create_order_safe(self, user_id, status, items):
         conn = self.get_connection()
         if conn is None:
-            return False
+            return None, "Нет соединения с БД"
         try:
             with conn.cursor() as cursor:
                 cursor.execute(
-                    "INSERT INTO orders (user_id) VALUES (%s) RETURNING order_id",
-                    (user_id,)
+                    "INSERT INTO orders (user_id, status, order_date) VALUES (%s, %s, CURRENT_DATE) RETURNING order_id",
+                    (user_id, status)
                 )
                 order_id = cursor.fetchone()[0]
 
                 for item in items:
+                    product_id = item['product_id']
+                    variant_id = item['variant_id']
+                    qty = item['quantity']
+                    price = item['price']
+
                     cursor.execute(
-                        "INSERT INTO order_items (order_id, stock_item_id, quantity, price) VALUES (%s, %s, %s, %s)",
-                        (order_id, item['product_id'], item['quantity'], item['price'])
+                        "SELECT stock_item_id FROM stock_items WHERE product_id = %s AND variant_id = %s",
+                        (product_id, variant_id)
+                    )
+                    stock_res = cursor.fetchone()
+                    if not stock_res:
+                        raise Exception("Товар с выбранным вариантом не найден на складе.")
+                    stock_item_id = stock_res[0]
+
+                    cursor.execute(
+                        "UPDATE stock_items SET quantity = quantity - %s WHERE stock_item_id = %s AND quantity >= %s",
+                        (qty, stock_item_id, qty)
+                    )
+                    
+                    if cursor.rowcount != 1:
+                        raise Exception("Недостаточно товара на складе для выбранного варианта")
+
+                    cursor.execute(
+                        "INSERT INTO order_items (order_id, stock_item_id, quantity, price, variant_id) VALUES (%s, %s, %s, %s, %s)",
+                        (order_id, stock_item_id, qty, price, str(variant_id))
                     )
             conn.commit()
-            return True
-        except psycopg.Error as e:
-            print(f"Ошибка при создании заказа: {e}")
+            return order_id, None
+        except Exception as e:
             conn.rollback()
-            return False
+            return None, str(e)
         finally:
             self.release_connection(conn)
 
@@ -121,7 +142,7 @@ class Database:
                 query = """
                     SELECT o.order_id, 
                            COALESCE(u.last_name, '') || ' ' || COALESCE(u.first_name, '') || ' ' || COALESCE(u.middle_name, '') AS fio,
-                           COUNT(oi.id) AS items_count,
+                           COUNT(oi.order_item_id) AS items_count,
                            SUM(oi.quantity * oi.price) AS total_sum
                     FROM orders o
                     LEFT JOIN users u ON o.user_id = u.user_id
