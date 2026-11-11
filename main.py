@@ -502,6 +502,7 @@ class MainWindow(QMainWindow):
             fio = order[1].strip() if order[1] else "Неизвестный пользователь"
             items_count = order[2]
             total_sum = order[3] if order[3] else 0
+            status_name = order[4] if len(order) > 4 else "Неизвестно"
 
             card = QWidget()
             card.setStyleSheet("border: 1px solid #000000; border-radius: 4px; background-color: #F4F9F9; margin-bottom: 5px;")
@@ -510,8 +511,8 @@ class MainWindow(QMainWindow):
             lbl_info = QLabel(f"<b>Заказ №{order_id}</b> | {fio}")
             lbl_info.setStyleSheet("font-size: 14px; color: black; border: none;")
             
-            lbl_details = QLabel(f"Позиций: {items_count} | Сумма: {total_sum:.2f} ₽")
-            lbl_details.setStyleSheet("font-size: 14px; color: black; border: none; font-weight: bold;")
+            lbl_details = QLabel(f"Статус: <b>{status_name}</b> | Позиций: {items_count} | Сумма: {total_sum:.2f} ₽")
+            lbl_details.setStyleSheet("font-size: 14px; color: black; border: none;")
             
             layout.addWidget(lbl_info)
             layout.addStretch()

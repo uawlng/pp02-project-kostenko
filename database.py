@@ -86,15 +86,23 @@ class Database:
         finally:
             self.release_connection(conn)
 
-    def create_order_safe(self, user_id, status, items):
+    def create_order_safe(self, user_id, status_name, items):
         conn = self.get_connection()
         if conn is None:
             return None, "Нет соединения с БД"
         try:
             with conn.cursor() as cursor:
+                # Ищем ID статуса по его названию из таблицы order_statuses
+                cursor.execute("SELECT status_id FROM order_statuses WHERE name = %s", (status_name,))
+                status_res = cursor.fetchone()
+                if not status_res:
+                    raise Exception(f"Статус '{status_name}' не найден в БД")
+                status_id = status_res[0]
+
+                # Создаем заказ с найденным status_id
                 cursor.execute(
-                    "INSERT INTO orders (user_id, status, order_date) VALUES (%s, %s, CURRENT_DATE) RETURNING order_id",
-                    (user_id, status)
+                    "INSERT INTO orders (user_id, status_id, order_date) VALUES (%s, %s, CURRENT_DATE) RETURNING order_id",
+                    (user_id, status_id)
                 )
                 order_id = cursor.fetchone()[0]
 
@@ -143,11 +151,13 @@ class Database:
                     SELECT o.order_id, 
                            COALESCE(u.last_name, '') || ' ' || COALESCE(u.first_name, '') || ' ' || COALESCE(u.middle_name, '') AS fio,
                            COUNT(oi.order_item_id) AS items_count,
-                           SUM(oi.quantity * oi.price) AS total_sum
+                           SUM(oi.quantity * oi.price) AS total_sum,
+                           COALESCE(s.name, 'Неизвестно') AS status_name
                     FROM orders o
                     LEFT JOIN users u ON o.user_id = u.user_id
                     LEFT JOIN order_items oi ON o.order_id = oi.order_id
-                    GROUP BY o.order_id, u.last_name, u.first_name, u.middle_name
+                    LEFT JOIN order_statuses s ON o.status_id = s.status_id
+                    GROUP BY o.order_id, u.last_name, u.first_name, u.middle_name, s.name
                     ORDER BY o.order_id DESC
                 """
                 cursor.execute(query)
