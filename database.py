@@ -140,14 +140,12 @@ class Database:
             return None, "Нет соединения с БД"
         try:
             with conn.cursor() as cursor:
-                # Ищем ID статуса в таблице order_statuses
                 cursor.execute("SELECT status_id FROM order_statuses WHERE name = %s", (status_name,))
                 status_res = cursor.fetchone()
                 if not status_res:
                     raise Exception(f"Статус '{status_name}' не найден в БД (проверьте таблицу order_statuses)")
                 status_id = status_res[0]
 
-                # Создаем заказ
                 cursor.execute(
                     "INSERT INTO orders (user_id, status_id, order_date) VALUES (%s, %s, CURRENT_TIMESTAMP) RETURNING order_id",
                     (user_id, status_id)
@@ -177,7 +175,6 @@ class Database:
                     if cursor.rowcount != 1:
                         raise Exception(f"Недостаточно товара на складе для выбранного варианта")
 
-                    # В вашей БД в order_items колонка называется price
                     cursor.execute(
                         "INSERT INTO order_items (order_id, stock_item_id, quantity, price) VALUES (%s, %s, %s, %s)",
                         (order_id, stock_item_id, qty, price)
@@ -190,7 +187,7 @@ class Database:
         finally:
             self.release_connection(conn)
 
-    def get_all_orders(self):
+    def get_orders_for_table(self):
         conn = self.get_connection()
         if conn is None:
             return []
@@ -198,21 +195,88 @@ class Database:
             with conn.cursor() as cursor:
                 query = """
                     SELECT o.order_id, 
-                           COALESCE(u.last_name, '') || ' ' || COALESCE(u.first_name, '') || ' ' || COALESCE(u.middle_name, '') AS fio,
-                           COUNT(oi.order_item_id) AS items_count,
-                           SUM(oi.quantity * oi.price) AS total_sum,
-                           COALESCE(s.name, 'Неизвестно') AS status_name
+                           TO_CHAR(o.order_date, 'DD.MM.YYYY HH24:MI') AS order_date,
+                           CONCAT_WS(' ', u.last_name, u.first_name, u.middle_name) AS full_name,
+                           COALESCE(SUM(oi.quantity * oi.price), 0) AS total,
+                           COALESCE(s.name, 'Неизвестно') AS status
                     FROM orders o
                     LEFT JOIN users u ON o.user_id = u.user_id
                     LEFT JOIN order_items oi ON o.order_id = oi.order_id
                     LEFT JOIN order_statuses s ON o.status_id = s.status_id
-                    GROUP BY o.order_id, u.last_name, u.first_name, u.middle_name, s.name
-                    ORDER BY o.order_id DESC
+                    GROUP BY o.order_id, o.order_date, u.last_name, u.first_name, u.middle_name, s.name
+                    ORDER BY o.order_date DESC
                 """
                 cursor.execute(query)
                 return cursor.fetchall()
         except psycopg.Error as e:
             print(f"Ошибка получения заказов: {e}")
             return []
+        finally:
+            self.release_connection(conn)
+
+    def get_order_details(self, order_id):
+        conn = self.get_connection()
+        if conn is None:
+            return []
+        try:
+            with conn.cursor() as cursor:
+                query = """
+                    SELECT COALESCE(p.name, 'Товар удален') AS name,
+                           oi.quantity, oi.price, (oi.quantity * oi.price) AS total
+                    FROM order_items oi
+                    LEFT JOIN stock_items si ON oi.stock_item_id = si.stock_item_id
+                    LEFT JOIN products p ON si.product_id = p.product_id
+                    WHERE oi.order_id = %s
+                """
+                cursor.execute(query, (order_id,))
+                return cursor.fetchall()
+        except psycopg.Error as e:
+            print(f"Ошибка получения состава заказа: {e}")
+            return []
+        finally:
+            self.release_connection(conn)
+
+    def get_order_total(self, order_id):
+        conn = self.get_connection()
+        if conn is None:
+            return 0
+        try:
+            with conn.cursor() as cursor:
+                query = """
+                    SELECT COALESCE(SUM(quantity * price), 0) AS total
+                    FROM order_items
+                    WHERE order_id = %s
+                """
+                cursor.execute(query, (order_id,))
+                row = cursor.fetchone()
+                return row[0] if row else 0
+        except psycopg.Error as e:
+            print(f"Ошибка получения суммы заказа: {e}")
+            return 0
+        finally:
+            self.release_connection(conn)
+
+    def delete_order_item(self, order_id, product_name):
+        conn = self.get_connection()
+        if conn is None:
+            return False
+        try:
+            with conn.cursor() as cursor:
+                query = """
+                    DELETE FROM order_items 
+                    WHERE order_id = %s AND stock_item_id IN (
+                        SELECT si.stock_item_id 
+                        FROM stock_items si 
+                        JOIN products p ON si.product_id = p.product_id 
+                        WHERE p.name = %s
+                    )
+                """
+                cursor.execute(query, (order_id, product_name))
+                conn.commit()
+                return True
+        except psycopg.Error as e:
+            print(f"Ошибка удаления позиции: {e}")
+            conn.rollback()
+            return False
         finally:
             self.release_connection(conn)
