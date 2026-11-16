@@ -1,6 +1,7 @@
 import psycopg
 from psycopg_pool import ConnectionPool
 
+
 class Database:
     def __init__(self):
         self.connection_pool = None
@@ -30,6 +31,53 @@ class Database:
             self.connection_pool.close()
             print("Пул закрыт")
 
+    def get_variants(self):
+        conn = self.get_connection()
+        if conn is None:
+            return []
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT variant_id, variant_name FROM variants ORDER BY variant_id")
+                return cursor.fetchall()
+        except psycopg.Error as e:
+            print(f"Ошибка запроса вариантов: {e}")
+            return []
+        finally:
+            self.release_connection(conn)
+
+    def get_stock_quantity(self, product_id, variant_id):
+        conn = self.get_connection()
+        if conn is None:
+            return 0
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT quantity FROM stock_items WHERE product_id = %s AND variant_id = %s",
+                    (product_id, variant_id)
+                )
+                row = cursor.fetchone()
+                return row[0] if row else 0
+        except psycopg.Error as e:
+            print(f"Ошибка запроса остатка: {e}")
+            return 0
+        finally:
+            self.release_connection(conn)
+
+    def get_order_date(self, order_id):
+        conn = self.get_connection()
+        if conn is None:
+            return ""
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT order_date FROM orders WHERE order_id = %s", (order_id,))
+                row = cursor.fetchone()
+                return row[0].strftime("%d.%m.%Y %H:%M") if row else ""
+        except psycopg.Error as e:
+            print(f"Ошибка запроса даты заказа: {e}")
+            return ""
+        finally:
+            self.release_connection(conn)
+
     def get_categories(self):
         conn = self.get_connection()
         if conn is None:
@@ -37,8 +85,7 @@ class Database:
         try:
             with conn.cursor() as cursor:
                 cursor.execute("SELECT name FROM categories ORDER BY name")
-                categories = cursor.fetchall()
-                return [row[0] for row in categories]
+                return [row[0] for row in cursor.fetchall()]
         except psycopg.Error as e:
             print(f"Ошибка запроса категорий: {e}")
             return []
@@ -56,8 +103,6 @@ class Database:
                 order_map = {
                     "Цена: по возрастанию": "p.price ASC",
                     "Цена: по убыванию": "p.price DESC",
-                    "Количество: по возрастанию": "total_quantity ASC",
-                    "Количество: по убыванию": "total_quantity DESC",
                 }
                 order_clause = ""
                 if sort_order in order_map:
@@ -67,18 +112,21 @@ class Database:
                     SELECT p.product_id, p.name, p.price, p.image,
                            COALESCE(m.name, 'Неизвестно') AS manufacturer,
                            COALESCE(SUM(si.quantity), 0) AS total_quantity,
-                           COALESCE(c.name, 'Без категории') AS category_name
+                           COALESCE(c.name, 'Без категории') AS category_name,
+                           COALESCE(mat.name, '') AS material,
+                           'Описание отсутствует' AS description
                     FROM products p
                     LEFT JOIN manufacturers m ON p.manufacturer_id = m.manufacturer_id
                     LEFT JOIN categories c ON p.category_id = c.category_id
+                    LEFT JOIN materials mat ON p.material_id = mat.material_id
                     LEFT JOIN stock_items si ON p.product_id = si.product_id
-                    WHERE (p.name ILIKE %s OR COALESCE(m.name, '') ILIKE %s)
+                    WHERE p.name ILIKE %s
                     AND (c.name = %s OR %s = 'Все категории')
-                    GROUP BY p.product_id, p.name, p.price, p.image, m.name, c.name
+                    GROUP BY p.product_id, p.name, p.price, p.image,
+                             m.name, c.name, mat.name
                     {order_clause}
                 """
-
-                cursor.execute(query, (search_pattern, search_pattern, category, category))
+                cursor.execute(query, (search_pattern, category, category))
                 return cursor.fetchall()
         except psycopg.Error as e:
             print(f"Ошибка запроса: {e}")
@@ -92,16 +140,16 @@ class Database:
             return None, "Нет соединения с БД"
         try:
             with conn.cursor() as cursor:
-                # Ищем ID статуса по его названию из таблицы order_statuses
+                # Ищем ID статуса в таблице order_statuses
                 cursor.execute("SELECT status_id FROM order_statuses WHERE name = %s", (status_name,))
                 status_res = cursor.fetchone()
                 if not status_res:
-                    raise Exception(f"Статус '{status_name}' не найден в БД")
+                    raise Exception(f"Статус '{status_name}' не найден в БД (проверьте таблицу order_statuses)")
                 status_id = status_res[0]
 
-                # Создаем заказ с найденным status_id
+                # Создаем заказ
                 cursor.execute(
-                    "INSERT INTO orders (user_id, status_id, order_date) VALUES (%s, %s, CURRENT_DATE) RETURNING order_id",
+                    "INSERT INTO orders (user_id, status_id, order_date) VALUES (%s, %s, CURRENT_TIMESTAMP) RETURNING order_id",
                     (user_id, status_id)
                 )
                 order_id = cursor.fetchone()[0]
@@ -118,7 +166,7 @@ class Database:
                     )
                     stock_res = cursor.fetchone()
                     if not stock_res:
-                        raise Exception("Товар с выбранным вариантом не найден на складе.")
+                        raise Exception(f"Товар с ID {product_id} и вариантом {variant_id} не найден на складе.")
                     stock_item_id = stock_res[0]
 
                     cursor.execute(
@@ -127,11 +175,12 @@ class Database:
                     )
                     
                     if cursor.rowcount != 1:
-                        raise Exception("Недостаточно товара на складе для выбранного варианта")
+                        raise Exception(f"Недостаточно товара на складе для выбранного варианта")
 
+                    # В вашей БД в order_items колонка называется price
                     cursor.execute(
-                        "INSERT INTO order_items (order_id, stock_item_id, quantity, price, variant_id) VALUES (%s, %s, %s, %s, %s)",
-                        (order_id, stock_item_id, qty, price, str(variant_id))
+                        "INSERT INTO order_items (order_id, stock_item_id, quantity, price) VALUES (%s, %s, %s, %s)",
+                        (order_id, stock_item_id, qty, price)
                     )
             conn.commit()
             return order_id, None
