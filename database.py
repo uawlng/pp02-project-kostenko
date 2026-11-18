@@ -37,10 +37,60 @@ class Database:
             return []
         try:
             with conn.cursor() as cursor:
-                cursor.execute("SELECT variant_id, variant_name FROM variants ORDER BY variant_id")
+                cursor.execute("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name='variants'
+                """)
+                columns = [row[0] for row in cursor.fetchall()]
+                name_col = 'variant_name'
+                if 'variant_name' not in columns:
+                    if 'name' in columns:
+                        name_col = 'name'
+                    elif 'title' in columns:
+                        name_col = 'title'
+                    else:
+                        name_col = columns[1] if len(columns) > 1 else columns[0]
+                query = f"SELECT variant_id, {name_col} FROM variants ORDER BY variant_id"
+                cursor.execute(query)
                 return cursor.fetchall()
         except psycopg.Error as e:
             print(f"Ошибка запроса вариантов: {e}")
+            return []
+        finally:
+            self.release_connection(conn)
+
+    def get_variants_for_product(self, product_id):
+        conn = self.get_connection()
+        if conn is None:
+            return []
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name='variants'
+                """)
+                columns = [row[0] for row in cursor.fetchall()]
+                name_col = 'variant_name'
+                if 'variant_name' not in columns:
+                    if 'name' in columns:
+                        name_col = 'name'
+                    elif 'title' in columns:
+                        name_col = 'title'
+                    else:
+                        name_col = columns[1] if len(columns) > 1 else columns[0]
+                query = f"""
+                    SELECT DISTINCT v.variant_id, v.{name_col}
+                    FROM variants v
+                    JOIN stock_items si ON si.variant_id = v.variant_id
+                    WHERE si.product_id = %s
+                    ORDER BY v.variant_id
+                """
+                cursor.execute(query, (product_id,))
+                return cursor.fetchall()
+        except psycopg.Error as e:
+            print(f"Ошибка запроса вариантов товара: {e}")
             return []
         finally:
             self.release_connection(conn)
@@ -99,7 +149,6 @@ class Database:
         try:
             with conn.cursor() as cursor:
                 search_pattern = f"%{search}%"
-
                 order_map = {
                     "Цена: по возрастанию": "p.price ASC",
                     "Цена: по убыванию": "p.price DESC",
@@ -107,7 +156,6 @@ class Database:
                 order_clause = ""
                 if sort_order in order_map:
                     order_clause = f"ORDER BY {order_map[sort_order]}"
-
                 query = f"""
                     SELECT p.product_id, p.name, p.price, p.image,
                            COALESCE(m.name, 'Неизвестно') AS manufacturer,
@@ -134,6 +182,28 @@ class Database:
         finally:
             self.release_connection(conn)
 
+    def search_products_for_order(self, search_text):
+        conn = self.get_connection()
+        if conn is None:
+            return []
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT p.product_id, p.name, p.price,
+                           COALESCE(SUM(si.quantity), 0) AS total_quantity
+                    FROM products p
+                    LEFT JOIN stock_items si ON p.product_id = si.product_id
+                    WHERE p.name ILIKE %s
+                    GROUP BY p.product_id, p.name, p.price
+                    ORDER BY p.name
+                """, (f"%{search_text}%",))
+                return cursor.fetchall()
+        except psycopg.Error as e:
+            print(f"Ошибка поиска товаров: {e}")
+            return []
+        finally:
+            self.release_connection(conn)
+
     def create_order_safe(self, user_id, status_name, items):
         conn = self.get_connection()
         if conn is None:
@@ -143,21 +213,18 @@ class Database:
                 cursor.execute("SELECT status_id FROM order_statuses WHERE name = %s", (status_name,))
                 status_res = cursor.fetchone()
                 if not status_res:
-                    raise Exception(f"Статус '{status_name}' не найден в БД (проверьте таблицу order_statuses)")
+                    raise Exception(f"Статус '{status_name}' не найден в БД")
                 status_id = status_res[0]
-
                 cursor.execute(
                     "INSERT INTO orders (user_id, status_id, order_date) VALUES (%s, %s, CURRENT_TIMESTAMP) RETURNING order_id",
                     (user_id, status_id)
                 )
                 order_id = cursor.fetchone()[0]
-
                 for item in items:
                     product_id = item['product_id']
                     variant_id = item['variant_id']
                     qty = item['quantity']
                     price = item['price']
-
                     cursor.execute(
                         "SELECT stock_item_id FROM stock_items WHERE product_id = %s AND variant_id = %s",
                         (product_id, variant_id)
@@ -166,15 +233,12 @@ class Database:
                     if not stock_res:
                         raise Exception(f"Товар с ID {product_id} и вариантом {variant_id} не найден на складе.")
                     stock_item_id = stock_res[0]
-
                     cursor.execute(
                         "UPDATE stock_items SET quantity = quantity - %s WHERE stock_item_id = %s AND quantity >= %s",
                         (qty, stock_item_id, qty)
                     )
-                    
                     if cursor.rowcount != 1:
-                        raise Exception(f"Недостаточно товара на складе для выбранного варианта")
-
+                        raise Exception("Недостаточно товара на складе для выбранного варианта")
                     cursor.execute(
                         "INSERT INTO order_items (order_id, stock_item_id, quantity, price) VALUES (%s, %s, %s, %s)",
                         (order_id, stock_item_id, qty, price)
@@ -278,5 +342,46 @@ class Database:
             print(f"Ошибка удаления позиции: {e}")
             conn.rollback()
             return False
+        finally:
+            self.release_connection(conn)
+
+    def get_clients(self):
+        conn = self.get_connection()
+        if conn is None:
+            return []
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT user_id, CONCAT_WS(' ', last_name, first_name, middle_name) 
+                    FROM users WHERE role_id = 3
+                """)
+                return cursor.fetchall()
+        except psycopg.Error as e:
+            print(f"Ошибка получения клиентов: {e}")
+            return []
+        finally:
+            self.release_connection(conn)
+
+    def add_order_simple(self, user_id, status_name):
+        conn = self.get_connection()
+        if conn is None:
+            return None, "Нет соединения с БД"
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT status_id FROM order_statuses WHERE name = %s", (status_name,))
+                status_res = cursor.fetchone()
+                if not status_res:
+                    raise Exception(f"Статус '{status_name}' не найден")
+                status_id = status_res[0]
+                cursor.execute(
+                    "INSERT INTO orders (user_id, status_id, order_date) VALUES (%s, %s, CURRENT_TIMESTAMP) RETURNING order_id",
+                    (user_id, status_id)
+                )
+                order_id = cursor.fetchone()[0]
+            conn.commit()
+            return order_id, None
+        except Exception as e:
+            conn.rollback()
+            return None, str(e)
         finally:
             self.release_connection(conn)

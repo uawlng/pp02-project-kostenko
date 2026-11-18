@@ -42,7 +42,6 @@ class LoginWindow(QWidget):
 
         try:
             with conn.cursor() as cursor:
-                # ИСПРАВЛЕНО: используем role_id, так как в БД столбец называется так
                 cursor.execute(
                     """SELECT user_id, role_id, last_name, first_name, middle_name
                        FROM users WHERE login = %s""",
